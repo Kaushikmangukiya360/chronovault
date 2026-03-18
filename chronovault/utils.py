@@ -7,7 +7,7 @@ import ipaddress
 import secrets
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -18,7 +18,7 @@ def now_epoch() -> int:
 
 def now_iso() -> str:
     """Return current time in ISO 8601 UTC format."""
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def uuid4_str() -> str:
