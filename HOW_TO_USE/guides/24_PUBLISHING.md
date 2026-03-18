@@ -48,10 +48,10 @@ all = ["chronovault[server,django,grpc]"]
 chronovault = "chronovault.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/kaushikmangukiya/chronovault"
-Repository = "https://github.com/kaushikmangukiya/chronovault"
-"Bug Tracker" = "https://github.com/kaushikmangukiya/chronovault/issues"
-Documentation = "https://github.com/kaushikmangukiya/chronovault/HOW_TO_USE"
+Homepage = "https://github.com/kaushikmangukiya360/chronovault"
+Repository = "https://github.com/kaushikmangukiya360/chronovault"
+"Bug Tracker" = "https://github.com/kaushikmangukiya360/chronovault/issues"
+Documentation = "https://github.com/kaushikmangukiya360/chronovault/HOW_TO_USE"
 ```
 
 ## Release Workflow
@@ -83,7 +83,7 @@ twine upload dist/*
 
 **chronovault** — Enterprise Encrypted JSON Database for Python
 
-Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya)  
+Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya360)  
 Bug reports & feedback → kaushikmangukiya360@gmail.com
 
 </div>
