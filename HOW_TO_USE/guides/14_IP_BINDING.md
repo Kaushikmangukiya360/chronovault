@@ -24,7 +24,7 @@ Use `ip_allowlist=["*"]` only where network controls are already strict.
 
 **chronovault** — Enterprise Encrypted JSON Database for Python
 
-Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya)  
+Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya360)  
 Bug reports & feedback → kaushikmangukiya360@gmail.com
 
 </div>

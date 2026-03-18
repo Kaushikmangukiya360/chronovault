@@ -6,7 +6,7 @@
 ## Development Setup
 
 ```bash
-git clone https://github.com/kaushikmangukiya/chronovault
+git clone https://github.com/kaushikmangukiya360/chronovault
 cd chronovault
 python -m venv .venv
 source .venv/bin/activate
@@ -46,7 +46,7 @@ kaushikmangukiya360@gmail.com
 
 **chronovault** — Enterprise Encrypted JSON Database for Python
 
-Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya)  
+Built with love by [@kaushik mangukiya](https://github.com/kaushikmangukiya360)  
 Bug reports & feedback → kaushikmangukiya360@gmail.com
 
 </div>
