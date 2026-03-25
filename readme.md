@@ -7,7 +7,7 @@ This document explains how to install `chronovault` locally from the GitHub repo
 ### Option A — Clone via git (recommended)
 ```bash
 git clone https://github.com/kaushikmangukiya360/chronovault.git
-cd chronovault/chron/chronovault
+cd chronovault
 ```
 
 ### Option B — Download ZIP and unpack
@@ -65,6 +65,35 @@ Or run the included example script:
 
 ```bash
 python example.py
+```
+
+## 4.1) One-command developer flow
+
+Use the Makefile shortcuts:
+
+```bash
+make test-q
+```
+
+Other useful commands:
+
+```bash
+make preflight
+make run-example
+```
+
+## 4.2) Docker quick run
+
+Build image:
+
+```bash
+docker build -t chronovault:local .
+```
+
+Run container:
+
+```bash
+docker run --rm chronovault:local
 ```
 
 ---

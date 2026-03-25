@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package chronovault.api.v1;
+
+import "google/protobuf/struct.proto";
+
+service ChronoVaultService {
+  rpc Connect(ConnectRequest) returns (google.protobuf.Struct);
+  rpc Insert(WriteRequest) returns (google.protobuf.Struct);
+  rpc Find(QueryRequest) returns (google.protobuf.Struct);
+  rpc Delete(QueryRequest) returns (google.protobuf.Struct);
+  rpc Health(HealthRequest) returns (google.protobuf.Struct);
+}
+
+message ConnectRequest {
+  string token = 1;
+  string source_ip = 2;
+}
+
+message WriteRequest {
+  string token = 1;
+  string source_ip = 2;
+  string collection = 3;
+  google.protobuf.Struct record = 4;
+}
+
+message QueryRequest {
+  string token = 1;
+  string source_ip = 2;
+  string collection = 3;
+  google.protobuf.Struct query = 4;
+}
+
+message HealthRequest {
+  string token = 1;
+  string source_ip = 2;
+}

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import importlib
+import importlib.metadata
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -10,17 +13,23 @@ import uvicorn
 
 from chronovault.access.linker import Linker
 from chronovault.access.server import build_app
+from chronovault.access.grpc_server import GrpcServer
+from chronovault.access.grpc_transport import GrpcTransportClient, GrpcTransportServer
 from chronovault.audit.logger import AuditLogger
+from chronovault.backup.manager import BackupManager
 from chronovault.core.rekeyer import Rekeyer
 from chronovault.exceptions import CollectionNotFoundError, PermissionDeniedError
 from chronovault.query.aggregator import Aggregator
 from chronovault.query.builder import QueryBuilder
+from chronovault.schema.migration import MigrationManager
 from chronovault.storage.collection import Collection
 from chronovault.storage.store import JsonStore
 from chronovault.tenant.iam import IAM
 from chronovault.tenant.manager import TenantManager
 from chronovault.tenant.tokens import TokenService
-from chronovault.utils import redacted_error_message
+from chronovault.transaction.manager import TransactionManager
+from chronovault.transaction.wal import WriteAheadLog
+from chronovault.utils import now_epoch, redacted_error_message
 
 
 class _AuditProxy:
@@ -44,10 +53,13 @@ class _AuditProxy:
         self.vault._require(action="audit.read")
         return self.vault._audit.verify_integrity()
 
-    def export(self, output: str) -> None:
-        """Export decrypted audit entries to a JSON file."""
+    def export(self, output: str, encrypted: bool = False) -> None:
+        """Export audit entries to a file.
+
+        Set encrypted=True to keep export encrypted at rest.
+        """
         self.vault._require(action="audit.read")
-        self.vault._audit.export(output=output)
+        self.vault._audit.export(output=output, encrypted=encrypted)
 
 
 class _CollectionFacade:
@@ -143,7 +155,7 @@ class _CollectionFacade:
 
     def count(self, query: dict[str, Any] | None = None) -> int:
         """Return document count in collection."""
-        self.vault._require(action="read", collection=self.name)
+        self.vault._require(action="find", collection=self.name)
         return QueryBuilder(self).find(query or {}).count()
 
     def _raw_records(self) -> list[dict[str, Any]]:
@@ -153,6 +165,11 @@ class _CollectionFacade:
             collection=self.name,
             fn=lambda: self.vault._collection(self.name).find({}),
         )
+
+    def _fts_search(self, text: str) -> dict[str, float]:
+        """Return FTS score map for this collection."""
+        self.vault._require(action="read", collection=self.name)
+        return self.vault._collection(self.name).search_scores(text)
 
     def rotate_key(self) -> None:
         """Rotate collection encryption key epoch."""
@@ -216,6 +233,21 @@ class _CollectionFacade:
         self.vault._require(action="write", collection=self.name)
         self.vault._collection(self.name).drop_schema()
 
+    def enable_fts(self, fields: list[str]) -> None:
+        """Enable full-text indexing for selected fields."""
+        self.vault._require(action="write", collection=self.name)
+        self.vault._collection(self.name).enable_fts(fields)
+
+    def disable_fts(self) -> None:
+        """Disable full-text indexing for this collection."""
+        self.vault._require(action="write", collection=self.name)
+        self.vault._collection(self.name).disable_fts()
+
+    def search(self, text: str) -> QueryBuilder:
+        """Start a search query pipeline for this collection."""
+        self.vault._require(action="read", collection=self.name)
+        return QueryBuilder(self).find({}).search(text)
+
 
 class ChronoVault:
     """Enterprise time-keyed encrypted JSON database engine."""
@@ -266,17 +298,45 @@ class ChronoVault:
             org_id=self.org_id,
             tenant_token=self.token,
         )
+        self._wal = WriteAheadLog(
+            store=self._store,
+            wal_path=self._tenant_root / "wal.json",
+            org_id=self.org_id,
+            tenant_token=self.token,
+        )
+        self._wal.recover_pending()
+        self._transactions = TransactionManager(vault=self, wal=self._wal)
+        self._migrations = MigrationManager(
+            store=self._store,
+            file_path=self._tenant_root / "migrations.json",
+            org_id=self.org_id,
+            tenant_token=self.token,
+            migrations_dir=self._tenant_root / "migrations",
+            collection_factory=self._collection,
+        )
+        self._backup = BackupManager(
+            store=self._store,
+            tenant_root=self._tenant_root,
+            org_id=self.org_id,
+            tenant_token=self.token,
+        )
+        self._collections_cache: dict[str, Collection] = {}
 
         self.audit_log = _AuditProxy(self)
 
     def _collection(self, name: str) -> Collection:
-        return Collection(
+        cached = self._collections_cache.get(name)
+        if cached is not None:
+            return cached
+        collection = Collection(
             store=self._store,
             tenant_root=self._tenant_root,
             org_id=self.org_id,
             tenant_token=self.token,
             name=name,
         )
+        self._collections_cache[name] = collection
+        return collection
 
     def _require(self, action: str, collection: str | None = None) -> None:
         token_meta = self._tokens.validate(token=self.token, source_ip=self.source_ip, collection=collection)
@@ -414,8 +474,12 @@ class ChronoVault:
             single_use=single_use,
         )
 
-    def serve(self, port: int = 8471, host: str = "0.0.0.0") -> None:
-        """Serve signed-link access endpoint with FastAPI/Uvicorn."""
+    def serve(self, port: int = 8471, host: str = "0.0.0.0", background: bool = False) -> Any:
+        """Serve signed-link access endpoint with FastAPI/Uvicorn.
+
+        Set background=True to start server in a daemon thread and return
+        server/thread handles for embedded use cases.
+        """
         linker = Linker(
             store=self._store,
             tokens_path=self._tenant_root / "tokens.json",
@@ -429,10 +493,85 @@ class ChronoVault:
             return self._collection(name).find({})
 
         app = build_app(linker=linker, read_collection_data=_read_collection)
+        if background:
+            config = uvicorn.Config(app=app, host=host, port=port)
+            server = uvicorn.Server(config=config)
+            thread = threading.Thread(target=server.run, daemon=True)
+            thread.start()
+            return {"server": server, "thread": thread}
         uvicorn.run(app, host=host, port=port)
+        return None
 
-    def export_compliance_report(self, output: str) -> None:
-        """Export high-level tenant compliance report JSON."""
+    def grpc_server(self) -> GrpcServer:
+        """Return gRPC-style token-scoped server handler."""
+        self._require(action="read")
+        return GrpcServer(
+            store=self._store,
+            tenant_root=self._tenant_root,
+            org_id=self.org_id,
+            tenant_token=self.token,
+        )
+
+    def serve_grpc(
+        self,
+        port: int = 50051,
+        host: str = "0.0.0.0",
+        background: bool = False,
+        max_workers: int = 10,
+        require_token_metadata: bool = True,
+        tls_cert_chain_path: str | None = None,
+        tls_private_key_path: str | None = None,
+        tls_root_cert_path: str | None = None,
+        tls_require_client_auth: bool = False,
+    ) -> Any:
+        """Start grpcio network transport server for token-scoped RPC methods."""
+        self._require(action="read")
+        transport = GrpcTransportServer(
+            handler=self.grpc_server(),
+            host=host,
+            port=port,
+            max_workers=max_workers,
+            require_token_metadata=require_token_metadata,
+            tls_cert_chain_path=tls_cert_chain_path,
+            tls_private_key_path=tls_private_key_path,
+            tls_root_cert_path=tls_root_cert_path,
+            tls_require_client_auth=tls_require_client_auth,
+        )
+        transport.start()
+        if background:
+            return transport
+        try:
+            threading.Event().wait()
+        except KeyboardInterrupt:
+            transport.stop()
+        return None
+
+    @staticmethod
+    def grpc_client(
+        host: str = "127.0.0.1",
+        port: int = 50051,
+        timeout: float = 5.0,
+        use_tls: bool = False,
+        tls_root_cert_path: str | None = None,
+        tls_client_cert_chain_path: str | None = None,
+        tls_client_private_key_path: str | None = None,
+    ) -> GrpcTransportClient:
+        """Create grpcio transport client for ChronoVaultService."""
+        return GrpcTransportClient(
+            host=host,
+            port=port,
+            timeout=timeout,
+            use_tls=use_tls,
+            tls_root_cert_path=tls_root_cert_path,
+            tls_client_cert_chain_path=tls_client_cert_chain_path,
+            tls_client_private_key_path=tls_client_private_key_path,
+        )
+
+    def export_compliance_report(self, output: str, encrypted: bool = False) -> None:
+        """Export high-level tenant compliance report JSON.
+
+        Set encrypted=True to keep the report encrypted on disk.
+        """
         self._require(action="compliance")
         report = {
             "tenant": self.tenant_info(),
@@ -440,8 +579,86 @@ class ChronoVault:
             "tokens": self.list_tokens(),
             "audit_ok": self.audit_log.verify_integrity(),
         }
+        if encrypted:
+            self._store.write_encrypted_json(
+                file_path=Path(output),
+                payload=report,
+                tenant_token=self.token,
+                org_id=self.org_id,
+                timestamp=now_epoch(),
+                purpose="compliance_report",
+            )
+            return
         with open(output, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2, ensure_ascii=True)
+
+    def transaction(self) -> Any:
+        """Start a WAL-backed transaction context manager."""
+        self._require(action="write")
+        return self._transactions.start()
+
+    def health_check(self) -> dict[str, Any]:
+        """Return a basic health report for collections and WAL state."""
+        self._require(action="read")
+        read_errors = 0
+        for name in self.list_collections():
+            try:
+                _ = self._collection(name).count()
+            except Exception:  # noqa: BLE001
+                read_errors += 1
+        pending_wal = len(self._wal.pending())
+        return {
+            "org_id": self.org_id,
+            "collections_checked": len(self.list_collections()),
+            "read_errors": read_errors,
+            "pending_wal": pending_wal,
+            "healthy": read_errors == 0 and pending_wal == 0,
+        }
+
+    @staticmethod
+    def preflight_check() -> dict[str, Any]:
+        """Validate required runtime dependencies and return status details."""
+        required = ["cryptography", "filelock", "fastapi", "uvicorn", "click", "rich", "grpc", "google.protobuf"]
+        installed: dict[str, str] = {}
+        missing: list[str] = []
+
+        for name in required:
+            try:
+                module = importlib.import_module(name)
+                try:
+                    version = importlib.metadata.version(name)
+                except importlib.metadata.PackageNotFoundError:
+                    version = getattr(module, "__version__", "unknown")
+                installed[name] = str(version)
+            except Exception:  # noqa: BLE001
+                missing.append(name)
+
+        return {
+            "ok": len(missing) == 0,
+            "installed": installed,
+            "missing": missing,
+        }
+
+    def backup(self, output_path: str, include_audit: bool = True) -> None:
+        """Export tenant snapshot into one encrypted backup file."""
+        self._require(action="compliance")
+        self._backup.export(output_path=output_path, include_audit=include_audit)
+
+    def restore(self, input_path: str, force: bool = False) -> None:
+        """Restore tenant snapshot from encrypted backup file."""
+        self._require(action="compliance")
+        self._backup.restore(input_path=input_path, force=force)
+        self._collections_cache.clear()
+
+    def migrate(self, collection: str, direction: str, version: int | None = None) -> dict[str, Any]:
+        """Apply migration direction for one collection and return status."""
+        self._require(action="compliance")
+        return self._migrations.apply(collection=collection, direction=direction, version=version)
+
+    def migration_status(self) -> dict[str, Any]:
+        """Return migration status for all collections."""
+        self._require(action="compliance")
+        return self._migrations.status()
 
     def tenant_info(self) -> dict[str, Any]:
         """Return non-secret tenant metadata."""

@@ -4,7 +4,7 @@
 > Found a bug or have feedback? → kaushikmangukiya360@gmail.com
 
 ```text
-██████╗██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗
+███████╗██╗  ██╗██████╗  ██████╗ ███╗   ██╗ ██████╗
 ██╔════╝██║  ██║██╔══██╗██╔═══██╗████╗  ██║██╔═══██╗
 ██║     ███████║██████╔╝██║   ██║██╔██╗ ██║██║   ██║
 ██║     ██╔══██║██╔══██╗██║   ██║██║╚██╗██║██║   ██║
@@ -109,6 +109,7 @@ print(json.dumps(encrypted, indent=2))
 | Performance | [guides/22_PERFORMANCE.md](guides/22_PERFORMANCE.md) |
 | Compliance | [guides/23_COMPLIANCE.md](guides/23_COMPLIANCE.md) |
 | Publishing | [guides/24_PUBLISHING.md](guides/24_PUBLISHING.md) |
+| Visualization | [guides/25_VISUALIZATION.md](guides/25_VISUALIZATION.md) |
 
 ### Architecture
 

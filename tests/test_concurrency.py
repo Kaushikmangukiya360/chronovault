@@ -13,3 +13,5 @@ def test_concurrent_writes_remain_consistent(tmp_path) -> None:
         list(pool.map(_insert, range(40)))
 
     assert db.logs.count() == 40
+    assert db.audit_log.verify_integrity() is True
+    assert len(db.audit_log.tail(1000)) >= 40

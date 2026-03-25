@@ -102,24 +102,45 @@ class QueryBuilder:
         )
 
         if self._search_text:
-            terms = [t for t in self._search_text.lower().split() if t]
-            if terms:
+            score_map = self.collection._fts_search(self._search_text)
+            if score_map:
                 scored: list[dict[str, Any]] = []
                 for row in result:
-                    haystack = " ".join(str(v).lower() for v in row.values() if isinstance(v, (str, int, float)))
-                    hits = sum(1 for t in terms if t in haystack)
-                    if hits:
-                        item = dict(row)
-                        item["_score"] = hits / len(terms)
-                        scored.append(item)
+                    rid = str(row.get("_id", ""))
+                    score = score_map.get(rid)
+                    if score is None:
+                        continue
+                    item = dict(row)
+                    item["_score"] = score
+                    scored.append(item)
                 result = scored
+            else:
+                terms = [t for t in self._search_text.lower().split() if t]
+                if terms:
+                    scored = []
+                    for row in result:
+                        haystack = " ".join(str(v).lower() for v in row.values() if isinstance(v, (str, int, float)))
+                        hits = sum(1 for t in terms if t in haystack)
+                        if hits:
+                            item = dict(row)
+                            item["_score"] = hits / len(terms)
+                            scored.append(item)
+                    result = scored
 
         for spec in self._joins:
-            foreign = self.collection.vault._collection(spec["collection"]).find({})
+            foreign_collection = str(spec["collection"])
+            foreign = self.collection.vault.safe_call(
+                event="collection.read",
+                collection=foreign_collection,
+                fn=lambda: (
+                    self.collection.vault._require(action="find", collection=foreign_collection),
+                    self.collection.vault._collection(foreign_collection).find({}),
+                )[1],
+            )
             result = join_records(
                 left=result,
                 right=foreign,
-                right_alias=spec["collection"],
+                right_alias=foreign_collection,
                 on=spec["on"],
                 foreign_key=spec["foreign_key"],
                 join_type=spec["join_type"],

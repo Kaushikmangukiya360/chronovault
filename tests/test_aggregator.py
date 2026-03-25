@@ -31,3 +31,22 @@ def test_aggregation_pipeline_group_sort_limit(tmp_path) -> None:
 
     assert result[0]["_id"] == "IN"
     assert result[0]["total"] == 400
+
+
+def test_aggregation_sort_handles_missing_values(tmp_path) -> None:
+    db = cv.connect(token="root-secret", org_id="org-agg-missing", path=str(tmp_path))
+    db.metrics.insert_many(
+        [
+            {"name": "a", "value": 10},
+            {"name": "b"},
+            {"name": "c", "value": 5},
+        ]
+    )
+
+    result = db.metrics.aggregate(
+        [
+            {"$match": {}},
+            {"$sort": {"value": 1}},
+        ]
+    )
+    assert len(result) == 3

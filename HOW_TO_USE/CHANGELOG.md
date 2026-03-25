@@ -8,9 +8,9 @@ Format based on Keep a Changelog. Versioning follows Semantic Versioning.
 
 ## [Unreleased]
 
-- gRPC server support
-- Django backend adapter
-- Full-text search scoring improvements
+- Production gRPC transport (protobuf plus grpcio server)
+- Django backend completion beyond current skeleton
+- Migration file discovery and execution engine
 
 ## [1.0.0] — 2026-03-18
 
@@ -33,7 +33,7 @@ Format based on Keep a Changelog. Versioning follows Semantic Versioning.
 - Shard management: 10,000 records per file
 - LRU cache for decrypted shards (30s TTL)
 - HMAC-signed access links with TTL
-- Versioned migration system
+- Versioned migration tracking system
 - Encrypted backup and restore
 - FastAPI HTTP daemon server
 - ORM model layer

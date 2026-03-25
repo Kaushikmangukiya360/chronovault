@@ -9,11 +9,13 @@ from typing import Any
 from filelock import FileLock, Timeout
 
 from chronovault.exceptions import VaultLockTimeoutError
+from chronovault.search.fts import FullTextIndex
+from chronovault.query.operators import match_record
 from chronovault.schema.validator import SchemaValidator
 from chronovault.storage.index import IndexManager
 from chronovault.storage.shard import ShardManager
 from chronovault.storage.store import JsonStore
-from chronovault.utils import match_query, now_epoch, now_iso, uuid4_str
+from chronovault.utils import now_epoch, now_iso, uuid4_str
 
 
 class Collection:
@@ -37,6 +39,7 @@ class Collection:
         self.collection_dir = tenant_root / "collections" / name
         self.data_path = self.collection_dir / "data_000.json"
         self.index_path = self.collection_dir / "index.json"
+        self.fts_path = self.collection_dir / "fts.json"
         self.meta_path = self.collection_dir / "meta.json"
         self._rw_lock = FileLock(str(self.collection_dir / ".rw.lock"))
         self.shards = ShardManager(
@@ -47,6 +50,12 @@ class Collection:
         )
 
         self.index_manager = IndexManager(store=self.store, file_path=self.index_path, org_id=self.org_id)
+        self.fts_index = FullTextIndex(
+            store=self.store,
+            file_path=self.fts_path,
+            org_id=self.org_id,
+            tenant_token=self.tenant_token,
+        )
         self.schema_validator = SchemaValidator()
 
     def _read_meta(self) -> dict[str, Any]:
@@ -85,12 +94,16 @@ class Collection:
                 "updated_at": now_iso(),
                 "ts": ts,
                 "schema": existing_meta.get("schema"),
+                "fts_fields": existing_meta.get("fts_fields", []),
             },
             tenant_token=self.tenant_token,
             org_id=self.org_id,
             timestamp=ts,
             purpose="meta",
         )
+        fts_fields = existing_meta.get("fts_fields", [])
+        if isinstance(fts_fields, list) and fts_fields:
+            self.fts_index.rebuild(records=records, fields=[str(f) for f in fts_fields])
 
     @contextmanager
     def _acquire_rw(self) -> Any:
@@ -147,7 +160,7 @@ class Collection:
     def find(self, query: dict[str, Any]) -> list[dict[str, Any]]:
         """Find records matching query with exact, $gt, and $in operators."""
         records = self._read_records()
-        return [dict(r) for r in records if match_query(r, query)]
+        return [dict(r) for r in records if match_record(r, query)]
 
     def find_one(self, query: dict[str, Any]) -> dict[str, Any] | None:
         """Find first matching record or return None."""
@@ -163,10 +176,11 @@ class Collection:
             schema = self._schema()
 
             for record in records:
-                if match_query(record, query):
+                if match_record(record, query):
                     for key, value in updates.items():
                         if key != "_id":
                             record[key] = value
+                    record["_v"] = int(record.get("_v", 1)) + 1
                     record["_updated"] = now
                     if schema:
                         self.schema_validator.validate(record, schema)
@@ -180,7 +194,7 @@ class Collection:
         """Delete records matching query and return number of deleted records."""
         with self._acquire_rw():
             records = self._read_records()
-            kept = [r for r in records if not match_query(r, query)]
+            kept = [r for r in records if not match_record(r, query)]
             count = len(records) - len(kept)
             if count:
                 self._write_all(kept)
@@ -202,10 +216,11 @@ class Collection:
             schema = self._schema()
 
             for record in records:
-                if match_query(record, query):
+                if match_record(record, query):
                     for key, value in updates.items():
                         if key != "_id":
                             record[key] = value
+                    record["_v"] = int(record.get("_v", 1)) + 1
                     record["_updated"] = now
                     if schema:
                         self.schema_validator.validate(record, schema)
@@ -230,16 +245,49 @@ class Collection:
         inserted = 0
         updated = 0
         deleted = 0
-        for op in operations:
-            if "insert" in op:
-                self.insert(op["insert"])
-                inserted += 1
-            elif "update" in op:
-                spec = op["update"]
-                updated += self.update(spec.get("filter", {}), spec.get("set", {}))
-            elif "delete" in op:
-                spec = op["delete"]
-                deleted += self.delete(spec.get("filter", {}))
+        with self._acquire_rw():
+            records = self._read_records()
+            now = now_iso()
+            schema = self._schema()
+            dirty = False
+
+            for op in operations:
+                if "insert" in op:
+                    rid = uuid4_str()
+                    stored = dict(op["insert"])
+                    stored["_id"] = rid
+                    stored["_created"] = now
+                    stored["_updated"] = now
+                    stored["_v"] = int(stored.get("_v", 1))
+                    if schema:
+                        self.schema_validator.validate(stored, schema)
+                    records.append(stored)
+                    inserted += 1
+                    dirty = True
+                elif "update" in op:
+                    spec = op["update"]
+                    for record in records:
+                        if match_record(record, spec.get("filter", {})):
+                            for key, value in spec.get("set", {}).items():
+                                if key != "_id":
+                                    record[key] = value
+                            record["_v"] = int(record.get("_v", 1)) + 1
+                            record["_updated"] = now
+                            if schema:
+                                self.schema_validator.validate(record, schema)
+                            updated += 1
+                            dirty = True
+                elif "delete" in op:
+                    spec = op["delete"]
+                    kept = [r for r in records if not match_record(r, spec.get("filter", {}))]
+                    removed = len(records) - len(kept)
+                    if removed:
+                        deleted += removed
+                        dirty = True
+                        records = kept
+
+            if dirty:
+                self._write_all(records)
         return {"inserted": inserted, "updated": updated, "deleted": deleted}
 
     def count(self) -> int:
@@ -253,11 +301,11 @@ class Collection:
 
     def exists(self) -> bool:
         """Return True if collection data file exists."""
-        return self.data_path.exists()
+        return self.collection_dir.exists() and self.meta_path.exists()
 
     def drop(self) -> None:
         """Remove all collection files from disk."""
-        for path in (self.meta_path, self.index_path):
+        for path in (self.meta_path, self.index_path, self.fts_path):
             if path.exists():
                 path.unlink()
         for path in self.shards.list_shards():
@@ -307,3 +355,40 @@ class Collection:
                 timestamp=now_epoch(),
                 purpose="meta",
             )
+
+    def enable_fts(self, fields: list[str]) -> None:
+        """Enable full-text index on selected fields and rebuild index."""
+        safe_fields = [str(f) for f in fields if str(f).strip()]
+        meta = self._read_meta()
+        meta["fts_fields"] = safe_fields
+        meta["updated_at"] = now_iso()
+        meta["ts"] = now_epoch()
+        self.store.write_encrypted_json(
+            file_path=self.meta_path,
+            payload=meta,
+            tenant_token=self.tenant_token,
+            org_id=self.org_id,
+            timestamp=now_epoch(),
+            purpose="meta",
+        )
+        self.fts_index.rebuild(records=self._read_records(), fields=safe_fields)
+
+    def disable_fts(self) -> None:
+        """Disable and clear full-text index for this collection."""
+        meta = self._read_meta()
+        meta["fts_fields"] = []
+        meta["updated_at"] = now_iso()
+        meta["ts"] = now_epoch()
+        self.store.write_encrypted_json(
+            file_path=self.meta_path,
+            payload=meta,
+            tenant_token=self.tenant_token,
+            org_id=self.org_id,
+            timestamp=now_epoch(),
+            purpose="meta",
+        )
+        self.fts_index.disable()
+
+    def search_scores(self, query_text: str) -> dict[str, float]:
+        """Return _id to score map for full-text query."""
+        return self.fts_index.search_scores(query_text)

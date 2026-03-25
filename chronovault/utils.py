@@ -64,7 +64,7 @@ def ensure_ip_allowed(source_ip: str, ip_allowlist: list[str]) -> bool:
 def validate_ip_allowlist(ip_allowlist: list[str]) -> list[str]:
     """Validate and normalize IP/CIDR allowlist entries."""
     if not ip_allowlist:
-        raise ValueError("ip_allowlist cannot be empty")
+        return []
 
     normalized: list[str] = []
     for item in ip_allowlist:
@@ -82,9 +82,8 @@ def validate_ip_allowlist(ip_allowlist: list[str]) -> list[str]:
 
 
 def redacted_error_message(err: Exception) -> str:
-    """Return a safe generic error text without leaking internals."""
-    _ = err
-    return "operation failed"
+    """Return a safe error category without leaking sensitive details."""
+    return f"operation failed ({type(err).__name__})"
 
 
 def match_query(document: dict[str, Any], query: dict[str, Any]) -> bool:
