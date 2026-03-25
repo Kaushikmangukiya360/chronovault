@@ -25,7 +25,7 @@ class Aggregator:
                 spec = stage["$sort"]
                 sort_fields = list(spec.items())
                 for field, direction in reversed(sort_fields):
-                    out.sort(key=lambda r: self._extract(r, field), reverse=int(direction) < 0)
+                    out.sort(key=lambda r: self._sort_key(self._extract(r, field)), reverse=int(direction) < 0)
             elif "$limit" in stage:
                 out = out[: int(stage["$limit"])]
             elif "$skip" in stage:
@@ -53,6 +53,13 @@ class Aggregator:
                 return None
             current = current.get(part)
         return current
+
+    def _sort_key(self, value: Any) -> tuple[int, Any]:
+        if value is None:
+            return (1, "")
+        if isinstance(value, (int, float, bool, str)):
+            return (0, value)
+        return (0, str(value))
 
     def _resolve_expression(self, row: dict[str, Any], expr: Any) -> Any:
         if isinstance(expr, str) and expr.startswith("$"):

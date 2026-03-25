@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from importlib.metadata import version
+
 from chronovault.core.vault import ChronoVault
+
+__version__ = version("chronovault")
 
 
 def connect(
@@ -24,4 +28,4 @@ def connect(
     )
 
 
-__all__ = ["connect", "ChronoVault"]
+__all__ = ["connect", "ChronoVault", "__version__"]

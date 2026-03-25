@@ -17,7 +17,25 @@ def test_crud_operations(tmp_path) -> None:
 
     updated = db.users.update({"name": "Alice"}, {"age": 31})
     assert updated == 1
+    updated_rich = db.users.update({"age": {"$gte": 30}}, {"active": True})
+    assert updated_rich == 2
+
+    alice = db.users.find_one({"name": "Alice"})
+    assert alice is not None
+    assert alice["_v"] >= 2
 
     deleted = db.users.delete({"name": "Bob"})
     assert deleted == 1
+
+    bulk = db.users.bulk_write(
+        [
+            {"insert": {"name": "Dave", "age": 22}},
+            {"update": {"filter": {"age": {"$gte": 31}}, "set": {"vip": True}}},
+            {"delete": {"filter": {"name": "Carol"}}},
+        ]
+    )
+    assert bulk["inserted"] == 1
+    assert bulk["updated"] >= 1
+    assert bulk["deleted"] == 1
+
     assert db.users.count() == 2

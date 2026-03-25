@@ -41,11 +41,7 @@ class Linker:
         return base64.urlsafe_b64decode((value + padding).encode("ascii"))
 
     def _sign(self, message: str) -> str:
-        digest = hmac.new(
-            key=self.tenant_token.encode("utf-8"),
-            msg=message.encode("utf-8"),
-            digestmod=hashlib.sha256,
-        ).hexdigest()
+        digest = hmac.new(self.tenant_token.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
         return digest
 
     def generate_link(

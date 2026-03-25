@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 from typing import Any
 
+from filelock import FileLock
+from filelock import Timeout
+
 from chronovault.exceptions import AuditIntegrityError
 from chronovault.storage.store import JsonStore
 from chronovault.utils import now_epoch, now_iso, uuid4_str
@@ -21,6 +24,7 @@ class AuditLogger:
         self.file_path = file_path
         self.org_id = org_id
         self.tenant_token = tenant_token
+        self._append_lock = FileLock(str(self.file_path) + ".append.lock")
 
     def _read(self) -> list[dict[str, Any]]:
         payload = self.store.read_encrypted_json(
@@ -73,26 +77,30 @@ class AuditLogger:
         error: str | None = None,
     ) -> None:
         """Append one immutable audit event with chained integrity hash."""
-        entries = self._read()
-        prev_hash = entries[-1].get("chain_hash") if entries else "0" * 64
+        try:
+            with self._append_lock.acquire(timeout=self.store.lock_timeout):
+                entries = self._read()
+                prev_hash = entries[-1].get("chain_hash") if entries else "0" * 64
 
-        entry = {
-            "event_id": uuid4_str(),
-            "event": event,
-            "tenant_id": self.org_id,
-            "actor": actor,
-            "collection": collection,
-            "record_id": record_id,
-            "ip": ip,
-            "timestamp": now_iso(),
-            "key_epoch": now_epoch(),
-            "result": result,
-            "error": error,
-            "prev_hash": prev_hash,
-        }
-        entry["chain_hash"] = self._entry_hash(entry)
-        entries.append(entry)
-        self._write(entries)
+                entry = {
+                    "event_id": uuid4_str(),
+                    "event": event,
+                    "tenant_id": self.org_id,
+                    "actor": actor,
+                    "collection": collection,
+                    "record_id": record_id,
+                    "ip": ip,
+                    "timestamp": now_iso(),
+                    "key_epoch": now_epoch(),
+                    "result": result,
+                    "error": error,
+                    "prev_hash": prev_hash,
+                }
+                entry["chain_hash"] = self._entry_hash(entry)
+                entries.append(entry)
+                self._write(entries)
+        except Timeout as exc:
+            raise AuditIntegrityError("audit append lock timeout") from exc
 
     def tail(self, n: int = 100) -> list[dict[str, Any]]:
         """Return the most recent N audit entries."""
@@ -120,8 +128,22 @@ class AuditLogger:
             prev_hash = str(entry.get("chain_hash"))
         return True
 
-    def export(self, output: str) -> None:
-        """Export decrypted audit entries to a JSON file path."""
+    def export(self, output: str, encrypted: bool = False) -> None:
+        """Export audit entries to a JSON file path.
+
+        By default this exports plaintext JSON for external review. Set
+        encrypted=True to write an encrypted envelope instead.
+        """
         entries = self._read()
+        if encrypted:
+            self.store.write_encrypted_json(
+                file_path=Path(output),
+                payload={"entries": entries},
+                tenant_token=self.tenant_token,
+                org_id=self.org_id,
+                timestamp=now_epoch(),
+                purpose="audit_export",
+            )
+            return
         with open(output, "w", encoding="utf-8") as fh:
             json.dump({"entries": entries}, fh, indent=2, ensure_ascii=True)

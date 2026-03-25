@@ -29,6 +29,5 @@ def test_token_ttl_revocation_and_single_use(tmp_path) -> None:
 
     one = svc.issue_token(name="one", role="viewer", ttl=None, single_use=True)
     svc.validate(token=one, source_ip="127.0.0.1")
-    svc.mark_used(one)
     with pytest.raises(TokenExpiredError):
         svc.validate(token=one, source_ip="127.0.0.1")

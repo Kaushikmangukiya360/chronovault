@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import hmac
 import time
 from pathlib import Path
 from typing import Any
 
-from chronovault.exceptions import AuthenticationError, InvalidTokenError, TokenExpiredError, TokenRevokedError, UnauthorizedIPError
+from chronovault.exceptions import (
+    AuthenticationError,
+    InvalidTokenError,
+    PermissionDeniedError,
+    TokenExpiredError,
+    TokenRevokedError,
+    UnauthorizedIPError,
+)
 from chronovault.storage.store import JsonStore
 from chronovault.utils import ensure_ip_allowed, now_epoch, now_iso, secure_token, token_fingerprint, validate_ip_allowlist
 
@@ -119,7 +127,8 @@ class TokenService:
 
         matched: dict[str, Any] | None = None
         for item in payload.get("tokens", []):
-            if item.get("token_hash") == token_hash:
+            stored_hash = str(item.get("token_hash", ""))
+            if hmac.compare_digest(stored_hash, token_hash):
                 matched = item
                 break
 
@@ -141,7 +150,11 @@ class TokenService:
 
         allowed_collections = matched.get("collections", ["*"])
         if collection is not None and "*" not in allowed_collections and collection not in allowed_collections:
-            raise UnauthorizedIPError("token collection scope does not allow requested collection")
+            raise PermissionDeniedError("token collection scope does not allow requested collection")
+
+        if matched.get("single_use") and not matched.get("used"):
+            self.mark_used(token)
+            matched["used"] = True
 
         return {
             "name": matched.get("name"),

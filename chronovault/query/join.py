@@ -15,6 +15,9 @@ def join_records(
 ) -> list[dict[str, Any]]:
     """Join two record sets on key fields using inner/left/right semantics."""
     join_type = join_type.lower()
+    if join_type not in {"inner", "left", "right", "outer"}:
+        raise ValueError("unsupported join type")
+
     right_index: dict[Any, list[dict[str, Any]]] = {}
     for row in right:
         key = row.get(foreign_key)
@@ -44,8 +47,6 @@ def join_records(
             merged = {right_alias: dict(rrow)}
             result.append(merged)
 
-    if join_type not in {"inner", "left", "right", "outer"}:
-        raise ValueError("unsupported join type")
     if join_type == "inner":
-        return [row for row in result if row.get(right_alias) is not None]
+        return result
     return result
